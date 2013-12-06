@@ -4,6 +4,11 @@
 Created on Jul 5, 2013
 
 @author: mhanafi
+
+Required Python Modules
+python-configobj
+
+
 '''
 
 __author__ = "Mahmoud Hanafi"
@@ -34,6 +39,10 @@ import traceback
 global pmdThread
 global got_kill
 from struct import unpack
+from configobj import ConfigObj, ConfigObjError
+from pickle import dumps
+from struct import pack
+
 got_kill=False
 osts=[]
 
@@ -44,7 +53,6 @@ logfilehandel = logging.StreamHandler()
 mylogger.addHandler(logfilehandel)
 
 mylogger.setLevel(logging.DEBUG)
-mylogger.debug("starting program test")
 class output:
 	def	__init__(self,options, ostlist, debug=False,output=sys.stdout):
 		self.options=options
@@ -60,48 +68,67 @@ class output:
 		#elif type == "MDS":
 		#		sys.stdout.write("\n")
 					
-def parseheader(line, debug=False):
-	if debug: 
-		mylogger.info("parseheader started\n")
+def parseheader(line, options, pmdalist, hostcfg):
+	if options.debug: 
+		mylogger.debug("parseheader started\n")
+		#mylogger.debug(line)
 	metricnum=0
 	metrics={}
-	for m in line.split():
-		value=re.split(r':|\.|\["|\"\]',m)
-		
-		#['service170-ib1', 'lustre', 'mds', 'open', 'nbp1', '']
-		#['service171-ib1', 'lustre', 'ost', 'read_bytes', 'nbp1-OST0060', '']
-		if len(value) >=4 :
-			if re.search('OST',value[4]):
-				(fs,osthex)=value[4].split("-OST") #nbp1-OST0043
+	
+	
+	for m in line.split(";"):
+		valuetype=0 #0 single number 1 array
+		target = None
+		rate = False
+#		mylogger.debug("working on : %s" % m )
+#if metrics has a [] then we have a target
+		_targetmatch = re.search(r'.*\[\"(.*)\"\].*',m)
+		if  _targetmatch: # have a target
+			_target = _targetmatch.group(1).replace(" ","_")
+#			mylogger.debug("_target = %s" % _target )
+			value=re.split(r':|\.|\["|\"\]',m)
+			if "ost" in m:
+				(fs,osthex)=_target.split("-OST")
 				target=int("0x%s" % osthex,16)
-				if target not in osts:
-					osts.append(target)
+				if '_bytes' in m:
+					rate=True
+				if re.search(r'.*_pages',value[3]):
+					valuetype=1 #array
 			else:
-				target=None
-				fs=value[4]
-			if re.search(r'rpc_.*_pages',value[3]):
-				valtype=1 #array
-			else:
-				valtype=0 #static number
-			metrics[metricnum] = { 'fs': fs, 'valtype': valtype, 'systype' : value[1], 'subsys': value[2] , 'host' : value[0], 'metric': value[3], 'target': target}
+				target = _target
+			metricpath = re.search(r'.*:(.*)\[.*',m).group(1)
+			
 		else:
-			metrics[metricnum] = { 'metric' : value[0] }
+			if re.search("Time", m):
+				metricpath = m
+				target = None
+			else:
+				metricpath = re.search(r'.*:(.*)$',m).group(1)
+				target = None
+		
+		
+		metrics[metricnum] = { 'valtype' : valuetype, 'path': metricpath, 'target': target , 'rate' : rate }
+ 		#if len(value) > 1:	
+		#	metrics[metricnum] = { 'valtype': valuetype, 'systype' : value[1], 'subsys': value[2] , 'host' : value[0], 'metric': value[3], 'target': target}
+		#else:
+		#	metrics[metricnum] = { 'metric' : value[0] }
+		#print metrics[metricnum] 
 		metricnum += 1
-	osts.sort()
-	if debug: 
-		mylogger.info("parseheader ended returning \n")
+	if options.debug: 
+		mylogger.debug("parseheader ended returning \n")
 		mylogger.debug(metrics)
+
 	return metrics		
 
 def parsedata(line,metrics):
 	metricnum=0
 	
 	data={}
-	for d in line.split():
+	for d in line.split(";"):
 		if metricnum == 0: # This is time
 			data[metricnum]=float(d)
 			
-		elif d == "?":
+		elif d == "0" or d == "?":
 			data[metricnum] = 0.0
 #		thismetric = metrics[metricnum]['metric']
 #		if re.search(r'rpc_.*_pages',thismetric):
@@ -112,6 +139,7 @@ def parsedata(line,metrics):
 		else:
 			data[metricnum]=float(d)
 		metricnum += 1
+	#print data
 	return data
 
 def getprintosts(options,ost,mylustre):
@@ -134,7 +162,7 @@ class mySocket():
 	def __init__(self,host,port):
 		self.host = host
 		self.port = port
-		self.numtries=5
+		self.numtries=1
 		self.connect()
 
 	def connect(self):
@@ -161,48 +189,32 @@ class mySocket():
 		return recvmessage
 			
 	def senddata(self, data):
-		MSGLEN = len(''.join(data))
-		lol = lambda lst, sz: [lst[i:i+sz] for i in range(0, len(lst), sz)]
+#		MSGLEN = len(data)
+#		lol = lambda lst, sz: [lst[i:i+sz] for i in range(0, len(lst), sz)]
 		''' Need to try n times then through away the data'''
 		for t in range(self.numtries):
-			totalsent = 0
 			sent = 0
-			totalitems=0
-			if not self.status():
-				if not self.connect():
-					time.sleep(.1)
-					continue
+#			if not self.status():
+#				if not self.connect():
+#					time.sleep(.4)
+#					continue
 			try:	
-
-				# Send 50 Lines at a time				
-				for l in lol(data,50):
-					inputready,outputready,exceptready = select.select([self.mysocket],[0],[0])
-					totalitems += len(l)
-					msg = ''.join(l)
-					#mylogger.debug(msg)
-					sent = self.mysocket.send(msg)
-					totalsent +=sent
-					
+				self.connect()
+				sent = self.mysocket.send(data)
 				# can check recived data
-					if sent != len(msg):
-						mylogger.error("bytes sent not same as data dropping data: %i/%i" % (len(msg), sent))
-						self.close()
-						#Drop this data set
-						return sent
-
-				if totalsent != MSGLEN:
-					mylogger.error("total bytes sent %i totalitems %i %i" % (totalsent, totalitems,len(data)))
-					mylogger.error("bytes sent not same as data dropping data: %i/%i" % (MSGLEN, totalsent))
+				if sent != len(data):
+					mylogger.error("bytes sent not same as data dropping data: %i/%i" % (len(data), sent))
 					self.close()
-				break
+					#Drop this data set
+					return sent
 			except ValueError:
 				mylogger.error("Error sending data Try: %i" % t)
 				self.close()
 				mylogger.error(self.mysocket)
 			self.close()
 			time.sleep(.1)
-		mylogger.info("total bytes sent %i totalitems %i %i" % (totalsent, totalitems,len(data)))
-		return totalsent
+		mylogger.debug("total bytes sent %i of %i" % (sent, len(data)))
+		return sent
 		
 	def close(self):
 		if self.mysocket:
@@ -302,24 +314,17 @@ class myThread(Thread):
 def readconfig(options):
 	filename=options.configfile
 
-def make_pcp_config(options, mdsstats, oststats):
-    output=""
-	hosts={}
-		#Read Each line of configfile
-	for line in open(options.configfile,'r'):
-		if not line.startswith("#"): #skip comments
-			(host, type, fs) = line.split()
-			hosts[host]=[type,fs]
-			if type == "mds":
-				for stat in mdsstats:
-					output = output + "%s:lustre.mds.%s\n" % (host, stat) 
-			elif type == "oss":
-				for stat in oststats:
-					output = output + "%s:lustre.ost.%s\n" % (host, stat)
-	return output, hosts
+def make_pcp_config(options, myhostname, hostcfg, pmdalist ):
+	
+	output = ""
+	for pmdaname in hostcfg['pmda']:
+		mylogger.debug(pmdaname)
+		output += '\n'.join([ myhostname+":"+s for s in pmdalist[pmdaname].split()])
+		output +='\n'
+	return output, myhostname
 #	process.terminate()
 def signal_handler(signal, frame):
-	print 'You pressed Ctrl+C!'
+	mylogger.error('You pressed Ctrl+C!')
 	sys.exit(0)
 
 signal.signal(signal.SIGCHLD, signal_handler)
@@ -335,12 +340,15 @@ def optionParser(argv):
 	parser.add_option("-d","--debug", action="store_true", dest="debug", default=False,
 												help="enable debug output")
 	
-	parser.add_option("--logfile", "-l", dest="logfile", default=None,
+	parser.add_option("--logfile", "-l", dest="logfile", default="/tmp/pm2graphite.log",
 			help="Where to log" )
 	
-	parser.add_option("--conf", "-c", dest="configfile", default=None,
+	parser.add_option("--conf", "-c", dest="configfile", default="/usr/local/etc/pm2graphite.conf",
 			help="Configuration file")
 
+	parser.add_option("--pmdaconf", dest="pmdaconf", default="/usr/local/etc/pmdalist.conf",
+			help="Config file for pmda list" )
+			
 	parser.add_option("--outdir", "-o", dest="outdir", default="./",
 			help="(NOT WORKING) Director to store data")
 
@@ -350,8 +358,16 @@ def optionParser(argv):
 	parser.add_option("--daemon", action="store_true", dest="daemon", default=False,
 		help="Run as a daemon")
 	
-	parser.add_option("--pid", "-p", dest="pidfile", default="/tmp/pm2opentsdb.pid", 
+	parser.add_option("--pid", dest="pidfile", default="/tmp/pm2opentsdb.pid", 
 					help="Pid file name")
+	
+	parser.add_option("--host", dest="hostname", default=None,
+					help="overide hostname")
+	
+	parser.add_option("--server", "-s", dest="server", default="matrix2",
+					help="Default graphite server")
+	parser.add_option("--port", "-p", dest="serverport", type="int", default=2003,
+					help="Default graphite server port")
 	
 	(options, argv) = parser.parse_args()
 	
@@ -375,63 +391,53 @@ def optionParser(argv):
 #-- END parse Options --
 
 #-- Define SIGNALS to trap
-def pm2graphite(options, dataQueue, pmdSocket):
+def pm2graphite(options):
 	#-- Define variables
 	timestep0=True
-	olddata=[]
-	stats=[]
 	units=1024 # default units KB
-	#what stats to collect
-	stats.append({'path': "lustre.mds", 
-				  "metrics": ["open", "close", "link","unlink", "mkdir", 
-							  "rmdir", "rename","statfs", "getattr", 
-							  "setattr", "getxattr", "setxattr" ] } )
-	stats.append({"path": "lustre.ost", 
-				  "matrics" : ["read_bytes", "write_bytes",  "rpc_read_pages",
-								"rpc_write_pages", "cache_hit", "cache_miss" ]})
-	stats.append({"path": "kernel.all",
-				  "metrics": ["load", "cpu.user", "cpu.nice" ]})
-	stats.append({"path": "kernel.all"})
-'''
-service180-ib1:kernel.all.load
-service182-ib1:kernel.all.load
-service183-ib1:kernel.all.load
-service184-ib1:kernel.all.load
-service185-ib1:kernel.all.load
-service186-ib1:kernel.all.load
-service187-ib1:kernel.all.load
-service188-ib1:kernel.all.load
-service189-ib1:kernel.all.load
-service190-ib1:kernel.all.load
-service191-ib1:kernel.all.load
-service192-ib1:kernel.all.load
-service193-ib1:kernel.all.load
-service194-ib1:kernel.all.load
-service195-ib1:kernel.all.load
-service196-ib1:kernel.all.load
-service197-ib1:kernel.all.load
-service180-ib1:kernel.all.cpu.user
-service180-ib1:kernel.all.cpu.sys
-service180-ib1:kernel.all.cpu.nice
-service180-ib1:kernel.all.cpu.idle
-service180-ib1:kernel.all.cpu.wait.total
-service180-ib1:kernel.all.cpu.irq.hard
-service180-ib1:kernel.all.cpu.irq.soft
-service180-ib1:kernel.all.cpu.steal
+	# Load pmdaconf
+	try:
+		pmdalist=ConfigObj(options.pmdaconf)
+	except (ConfigObjError, IOError), e:
+		mylogger.error('Could not read "%s": %s' % (options.pmdaconf, e))
+	try:
+		hostcfg=ConfigObj(options.configfile)
+	
+	except (ConfigObjError, IOError), e:
+		mylogger.error('Could not read "%s": %s' % (options.configfile, e))
+		# what is my host name.
+	# Load pm2graphite.conf
+	if not options.hostname:
+		myhostname=socket.gethostname().split('.')[0]
+	else:
+		myhostname=options.hostname	
 
-'''
+	output = ""
+	#Is this host listed in the config file. If not exit
+	if not hostcfg.has_key(myhostname):
+		mylogger.error("This host [%s] is not in config file\n" % myhostname)
+		sys.exit(-1)
+	myfs = hostcfg[myhostname]['filesystem']
+# Check hostcfg
+#	defined:
+#			fs
+#			pmda
+
+
+
+
 #-- Create pmdumptext config file --
 	tempfh=tempfile.NamedTemporaryFile(delete=False)
-	( output, hosts) = make_pcp_config(options,mds_stats,ost_stats)
+	( output, host) = make_pcp_config(options, myhostname, hostcfg[myhostname], pmdalist)
 	tempfh.write(output)
 	tempfh.flush()
 	tempfh.close
 #-- Connect to opentsdb
 	pmdSocket = mySocket(options.server, options.serverport)
-
+	
 
 #-- Start collection subprocess
-	cmd="/usr/bin/pmdumptext -c %s -l -f %%s -t %i" % (tempfh.name,options.interval)
+	cmd="/usr/bin/pmdumptext -d ';' -U '0' -c %s -l -f %%s  -t %i" % (tempfh.name,options.interval)
 #	process = subprocess.Popen(cmd, bufsize=4096, shell=True, stdout=subprocess.PIPE)
 	dataQueue = Queue()
 	pmdThread = myThread(cmd,dataQueue,tempfile=tempfh.name)
@@ -455,7 +461,7 @@ service180-ib1:kernel.all.cpu.steal
 		if dataQueue.qsize() <= 0:
 			continue
 		try:
-			   nextline =dataQueue.get(False, .1)
+			nextline =dataQueue.get(False, .1)
 		except:
 			mylogger.error("Failed to read data from Queue")
 			break
@@ -465,20 +471,19 @@ service180-ib1:kernel.all.cpu.steal
 			break
 		if re.search("Time", nextline):
 			mylogger.info("header found")
-			header=parseheader(nextline)
+			header=parseheader(nextline, options, pmdalist, hostcfg[myhostname])
 
 			break
 	
 	while True:
-		total=0
-		total1=0
+
 		if dataQueue.qsize() <= 0:
 			continue
 		try:
 			nextline =dataQueue.get(False,.5)
 			if not re.search(r'^[0-9].*', nextline):
 				mylogger.debug("searching for ^[0-9].* not found continue")
-				mylogger.debug(nextline)
+				#mylogger.debug(nextline)
 				continue
 		except:
 			mylogger.error("Failed to read data from Queue")
@@ -501,8 +506,11 @@ service180-ib1:kernel.all.cpu.steal
 			newtime=data[0]
 			oldtime=olddata[0]
 			dt= newtime - oldtime
-			putmsg = []
+			putmsg= []
+			listOfMetricTuples=[]
+			
 			for metricnumber in data:
+				
 				thismetric=header[metricnumber]
 				
 				# Static numbers
@@ -511,25 +519,32 @@ service180-ib1:kernel.all.cpu.steal
 					continue
 					
 				#Output lustre.ost.write_bytes host=x ost=x fs=x
-				
-				if thismetric['subsys'] == 'mds':
-					
-					putmsg.append( "%s.%s.%s %f %i\n" % (thismetric['systype'],thismetric['subsys'],thismetric['metric'], 
-											data[metricnumber], newtime) )
-				 
-							 
-				elif thismetric['subsys'] == 'ost':
+				#print thismetric
+				if 'mds' in thismetric['path']:
+					_path = re.search(r'lustre\.mds\.(.*$)',thismetric['path']).group(1)
+					metricpath = "%s.%s.%s" % ( myfs, myhostname, _path)
+					putmsg.append( "%s %f %i\n" % (metricpath, data[metricnumber], newtime) )
+
+				elif 'ost' in thismetric['path']:
+					#mylogger.debug(thismetric['path'])
+					_path = re.search(r'lustre\.ost\.(.*$)',thismetric['path']).group(1)
 					if thismetric['valtype'] == 0:
-						try:
-							rate =  data[metricnumber]  / units
-						except:
-							mylogger.error("rate calculation error")
-							print metricnumber, units
-							sys.exit(1)
-						if thismetric['metric'] == 'write_bytes':
-							total += rate
-						putmsg.append("%s.%s.%s %f %i \n" % (thismetric['systype'], thismetric['subsys'],
-														thismetric['metric'], rate, newtime))
+						if thismetric['rate']:
+							try:
+								value =  data[metricnumber]  / units
+							except:
+								mylogger.error("rate calculation error")
+								#print metricnumber, units
+								sys.exit(1)
+						else:
+							value = data[metricnumber]
+						if thismetric['target'] != None:
+							metricpath = "%s.%s.%s.ost%s" % (myfs, myhostname, _path, thismetric['target'] )
+							
+							putmsg.append("%s %s %i \n" % (metricpath, value, newtime))
+						else:
+							metricpath = "%s.%s.%s" % (myfs, myhostname, _path)
+							putmsg.append("%s %f %i \n" % (metricpath, value, newtime))
 					elif thismetric['valtype'] == 1:
 						new = data[metricnumber][1]
 						old = olddata[metricnumber][1]
@@ -540,14 +555,57 @@ service180-ib1:kernel.all.cpu.steal
 						
 						
 						#	print rate
-							putmsg.append( "%s.%s.%s %f %i \n" % (thismetric['systype'], thismetric['subsys'],
-														thismetric['metric'], value,newtime) )
+							metricpath = "%s.%s.%s.%s.ost%s" % (myfs, myhostname, _path, size, thismetric['target'])
+							putmsg.append( "%s %f %i \n" % (metricpath, value,newtime) )
 						
+				else:
+					_path=thismetric['path']
+					value = data[metricnumber]
+					if thismetric['target'] != None:
+						metricpath = "%s.%s.target%s.%s" % (myfs, myhostname, _path, thismetric['target'])
+						putmsg.append( "%s %f %i \n" % (metricpath, value,newtime) )
+					else:
+						metricpath = "%s.%s.%s" % (myfs, myhostname, _path)
 						
-						total1 += rpcrate[1]
-			#mylogger.debug(putmsg)
-			pmdSocket.senddata(putmsg)
+						putmsg.append( "%s %f %i \n" % (metricpath, value,newtime) )
+#				listOfMetricTuples.append((metricpath, (newtime, value)))		
+				
+#			mylogger.debug(listOfMetricTuples)
+#			payload = dumps(listOfMetricTuples)
+#			payloadheader = pack("!L", len(payload))
+#			message = payloadheader + payload
+			message = ''.join(putmsg)
+			mylogger.debug( message )
+			pmdSocket.senddata(message)
 			olddata=copy.deepcopy(data)
+
+								
+		# Calculate totals	
+				
+	remove(tempfh.name)	
+
+
+
+if __name__ == '__main__':
+	try:
+		options=optionParser(sys.argv)
+		if options.daemon:
+			from daemon import Daemon
+			class myDaemon(Daemon):
+				def run(self):
+					sys.stdout.write("Starting run\n")
+					pm2graphite(options)
+			#from lockfile import FileLock
+			
+			context = myDaemon(options.pidfile, stdout=options.logfile, stderr=options.logfile )
+			context.start()
+		else:
+			pm2graphite(options)
+
+				
+	except Exception, err:
+		print err
+		traceback.print_exc()
 '''
 Open socket and output the following
 # 
@@ -565,9 +623,9 @@ nbp7.mdt.[open,close,link,unlink,mkdir,rmdir,rename,statfs,getattr,setattr,getxa
 Pickle formate
 [(path, (timestamp, value)), ...]
 
-Once you’ve formed a list of sufficient size (don’t go too big!), 
-send the data over a socket to Carbon’s pickle receiver 
-(by default, port 2004). You’ll need to pack your pickled 
+Once youve formed a list of sufficient size (dont go too big!), 
+send the data over a socket to Carbons pickle receiver 
+(by default, port 2004). Youll need to pack your pickled 
 data into a packet containing a simple header:
 
 payload = pickle.dumps(listOfMetricTuples)
@@ -584,33 +642,6 @@ message = header + payload
 #			"getattr", "setattr", "getxattr", "setxattr" ]
 #ost  ["read_bytes", "write_bytes",  "rpc_read_pages", "rpc_write_pages", "cache_hit", "cache_miss" ]
 '''	
-								
-		# Calculate totals	
-				
-	remove(tempfh.name)	
-
-
-
-if __name__ == '__main__':
-	try:
-		options=optionParser(sys.argv)
-		if options.daemon:
-			from daemon import Daemon
-			class myDaemon(Daemon):
-				def run(self):
-					sys.stdout.write("Starting run\n")
-					pm2opentsdb(options)
-			#from lockfile import FileLock
-			
-			context = myDaemon(options.pidfile, stdout=options.logfile, stderr=options.logfile )
-			context.start()
-		else:
-			pm2opentsdb(options)
-
-				
-	except Exception, err:
-		print err
-		traceback.print_exc()
 '''
 Metrics are sent like this
 ===
@@ -634,68 +665,3 @@ payload = {'json_playload': data_json, 'apikey': 'YOUR_API_KEY_HERE'}
 r = requests.get('http://myserver/emoncms2/api/post', data=payload)
 	
 ''' 
-
-
-#!/usr/bin/python
-"""Copyright 2008 Orbitz WorldWide
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-   http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License."""
-
-import sys
-import time
-import os
-import platform 
-import subprocess
-from socket import socket
-
-CARBON_SERVER = '127.0.0.1'
-CARBON_PORT = 2003
-
-delay = 60 
-if len(sys.argv) > 1:
-  delay = int( sys.argv[1] )
-
-def get_loadavg():
-  # For more details, "man proc" and "man uptime"  
-  if platform.system() == "Linux":
-	return open('/proc/loadavg').read().strip().split()[:3]
-  else:   
-	command = "uptime"
-	process = subprocess.Popen(command, stdout=subprocess.PIPE, shell=True)
-	os.waitpid(process.pid, 0)
-	output = process.stdout.read().replace(',', ' ').strip().split()
-	length = len(output)
-	return output[length - 3:length]
-
-sock = socket()
-try:
-  sock.connect( (CARBON_SERVER,CARBON_PORT) )
-except:
-  print "Couldn't connect to %(server)s on port %(port)d, is carbon-agent.py running?" % { 'server':CARBON_SERVER, 'port':CARBON_PORT }
-  sys.exit(1)
-
-while True:
-  now = int( time.time() )
-  lines = []
-  #We're gonna report all three loadavg values
-  loadavg = get_loadavg()
-  lines.append("system.loadavg_1min %s %d" % (loadavg[0],now))
-  lines.append("system.loadavg_5min %s %d" % (loadavg[1],now))
-  lines.append("system.loadavg_15min %s %d" % (loadavg[2],now))
-  message = '\n'.join(lines) + '\n' #all lines must end in a newline
-  print "sending message\n"
-  print '-' * 80
-  print message
-  print
-  sock.sendall(message)
-  time.sleep(delay)
