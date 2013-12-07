@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# $Source: /cvsroot/lustrepy/src/pm2opentsdb.py,v $
+# $Source: /cvsroot/lustrepy/src/pm2graphite.py,v $
 '''
 Created on Jul 5, 2013
 
@@ -46,7 +46,7 @@ from struct import pack
 got_kill=False
 osts=[]
 
-mylogger = logging.getLogger('pm2opentsdb')
+mylogger = logging.getLogger('pm2graphite')
 
 logformate = logging.Formatter('%(filename)s %(lineno)s %(levelname)s  %(message)s')
 logfilehandel = logging.StreamHandler()
@@ -358,7 +358,7 @@ def optionParser(argv):
 	parser.add_option("--daemon", action="store_true", dest="daemon", default=False,
 		help="Run as a daemon")
 	
-	parser.add_option("--pid", dest="pidfile", default="/tmp/pm2opentsdb.pid", 
+	parser.add_option("--pid", dest="pidfile", default="/tmp/pm2graphite.pid", 
 					help="Pid file name")
 	
 	parser.add_option("--host", dest="hostname", default=None,
@@ -432,7 +432,7 @@ def pm2graphite(options):
 	tempfh.write(output)
 	tempfh.flush()
 	tempfh.close
-#-- Connect to opentsdb
+#-- Connect to grahpite
 	pmdSocket = mySocket(options.server, options.serverport)
 	
 
@@ -453,7 +453,7 @@ def pm2graphite(options):
 	
 	mylogger.info("Start subprocess pid %d" % (pmdThread.process.pid))
 	mylogger.info("	  subprocess pid %d" % (pmdThread.process.pid))
-	
+	dataline=re.compile(r'^[0-9].*')	
 	
 #			self,options, ostlist, debug=False,output=sys.stdout):
 	while True: #Wait for the header
@@ -508,7 +508,8 @@ def pm2graphite(options):
 			dt= newtime - oldtime
 			putmsg= []
 			listOfMetricTuples=[]
-			
+			total_read_bytes = 0
+			total_write_bytes = 0
 			for metricnumber in data:
 				
 				thismetric=header[metricnumber]
@@ -532,6 +533,11 @@ def pm2graphite(options):
 						if thismetric['rate']:
 							try:
 								value =  data[metricnumber]  / units
+								if options.debug:
+									if  'read_bytes' in thismetric['path']:
+										total_read_bytes += value
+									if 'write_bytes' in thismetric['path']:
+										total_write_bytes += value
 							except:
 								mylogger.error("rate calculation error")
 								#print metricnumber, units
@@ -562,7 +568,7 @@ def pm2graphite(options):
 					_path=thismetric['path']
 					value = data[metricnumber]
 					if thismetric['target'] != None:
-						metricpath = "%s.%s.target%s.%s" % (myfs, myhostname, _path, thismetric['target'])
+						metricpath = "%s.%s.%s.%s" % (myfs, myhostname, _path, thismetric['target'])
 						putmsg.append( "%s %f %i \n" % (metricpath, value,newtime) )
 					else:
 						metricpath = "%s.%s.%s" % (myfs, myhostname, _path)
@@ -574,8 +580,11 @@ def pm2graphite(options):
 #			payload = dumps(listOfMetricTuples)
 #			payloadheader = pack("!L", len(payload))
 #			message = payloadheader + payload
+			
 			message = ''.join(putmsg)
 			mylogger.debug( message )
+			if options.debug:
+				mylogger.debug("read [ %.0f ] write [ %.0f ] " % (total_read_bytes,total_write_bytes))
 			pmdSocket.senddata(message)
 			olddata=copy.deepcopy(data)
 
