@@ -40,17 +40,23 @@ from pickle import dumps
 from struct import pack
 from threading import Thread,Event
 
+mylogger = logging.getLogger('pm2graphite')
+
+logFormate = logging.Formatter('%(filename)s %(lineno)s %(levelname)s  %(message)s')
+logStdOutHandle = logging.StreamHandler()
+logStdOutHandle.setFormatter(logFormate)
+
+mylogger.addHandler(logStdOutHandle)
+mylogger.setLevel(logging.DEBUG)
+
+
+def signal_handler(signal, frame):
+	mylogger.debug('Got exit signal')
+	sys.exit(0)
 signal.signal(signal.SIGCHLD, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 signal.signal(signal.SIGHUP, signal_handler)
-mylogger = logging.getLogger('pm2graphite')
-
-logformate = logging.Formatter('%(filename)s %(lineno)s %(levelname)s  %(message)s')
-logfilehandel = logging.StreamHandler()
-mylogger.addHandler(logfilehandel)
-mylogger.setLevel(logging.DEBUG)
-
 #-- Place holder class
 class output:
 	def	__init__(self,options, ostlist, debug=False,output=sys.stdout):
@@ -283,7 +289,10 @@ class myThread(Thread):
 	
 	def killme(self):
 		if self.tempfile:
-			remove(self.tempfile)
+			try:
+				remove(self.tempfile)
+			except:
+				pass
 		self.process.terminate()		
 		
 def make_pcp_config(options, myhostname, hostcfg, pmdalist ):
@@ -299,9 +308,6 @@ def make_pcp_config(options, myhostname, hostcfg, pmdalist ):
 	return output, myhostname
 #	process.terminate()
 
-def signal_handler(signal, frame):
-	mylogger.debug('Got exit signal')
-	sys.exit(0)
 
 
 def optionParser(argv):
@@ -311,7 +317,7 @@ def optionParser(argv):
 	parser.add_option("-d","--debug", action = "store_true", dest = "debug", default = False,
 												help="enable debug output")
 	
-	parser.add_option("--logfile", "-l", dest = "logfile", default = "/tmp/pm2graphite.log",
+	parser.add_option("--logfile", "-l", dest = "logfile", default = None,
 		help="Where to log" )
 	
 	parser.add_option("--conf", "-c", dest = "configfile", 
@@ -319,7 +325,7 @@ def optionParser(argv):
 		help = "Configuration file default[/usr/local/graphite/conf/pm2graphite.conf]")
 
 	parser.add_option("--pmdaconf", dest = "pmdaconf", 
-		default = "/usr/local/grahite/conf/pmdalist.conf",
+		default = "/usr/local/graphite/conf/pmlist.conf",
 		help = "Config file for pmda list default[/usr/local/graphite/conf/pmdalist.conf]" )
 			
 	parser.add_option("--interval", "-i", type = "int", dest = "interval", default = 1,
@@ -352,12 +358,10 @@ def optionParser(argv):
 	else:
 			mylogger.setLevel(logging.INFO)
 	if options.logfile:
-		logfilehandel = logging.FileHandler(options.logfile)
-		
-	else:
-		logfilehandel = logging.StreamHandler()
-	mylogger.addHandler(logfilehandel)	
-
+		logFileHandle = logging.FileHandler(options.logfile)
+		logFileHandle.setFormatter(logFormate)
+		mylogger.removeHandler(logStdOutHandle)		
+		mylogger.addHandler(logFileHandle)
 	return options
 
 def pm2graphite(options):
@@ -365,24 +369,22 @@ def pm2graphite(options):
 	timestep0 = True
 	units = 1024/1024 # default units MB
 	output = ""
-
+	myhostname = options.hostname
 #-- Load pmdaconf
 	try:
-		pmdalist = ConfigObj(options.pmdaconf,raise_errors=False)
+		pmdalist = ConfigObj(options.pmdaconf,raise_errors=True)
+
 	except (ConfigObjError, IOError), e:
 		mylogger.error('Could not read "%s": %s' % (options.pmdaconf, e))
-
+		sys.exit(1)
 #--	Load pm2graphti.conf
 	try:
-		hostcfg = ConfigObj(options.configfile,raise_errors=False)
+		hostcfg = ConfigObj(options.configfile,raise_errors=True)
 	
 	except (ConfigObjError, IOError), e:
 		mylogger.error('Could not read "%s": %s' % (options.configfile, e))
+		sys.exit(1)
 
-#-- what is my hostname.
-	if not options.hostname:
-	else:
-		myhostname = options.hostname	
 
 #-- Is this host listed in the config file. If not exit
 	if not hostcfg.has_key(myhostname):
@@ -390,7 +392,7 @@ def pm2graphite(options):
 		sys.exit(1)
 
 #-- MY filesystem
-	if 'filesystem' in hostcfg.[myhostname].keys():
+	if "filesystem" in hostcfg[myhostname]:
 		myfs = hostcfg[myhostname]['filesystem']
 	else:
 		mylogger.error("Filesystem tage not defined for this host.")
@@ -438,7 +440,7 @@ def pm2graphite(options):
 		if dataQueue.qsize() <= 0:
 			continue
 		try:
-			nextline =dataQueue.get(False, .1)
+			nextline =dataQueue.get(False, .4)
 		except:
 			mylogger.error("Failed to read data from Queue")
 			break
@@ -450,10 +452,6 @@ def pm2graphite(options):
 			mylogger.info("header found")
 			header=parseheader(nextline, options, pmdalist, hostcfg[myhostname])
 			break
-		if count > 10: # head not found exit
-			mylogger.error("Header not found exiting...")
-			sys.exit(1)
-		count += 1	
 
 
 #-- Main data parser loop
@@ -462,8 +460,8 @@ def pm2graphite(options):
 		if dataQueue.qsize() <= 0:
 			continue
 		try:
-			nextline =dataQueue.get(False,.2)
-			if not reDataLine(nextline):
+			nextline =dataQueue.get(False,.4)
+			if not reDataLine.search(nextline):
 				mylogger.debug("searching for ^[0-9].* not found continue")
 				#mylogger.debug(nextline)
 				continue
@@ -500,13 +498,13 @@ def pm2graphite(options):
 					
 				#Output lustre.ost.write_bytes host=x ost=x fs=x
 				if 'mds' in thismetric['path']:
-					_path = reMeticPathMDS(thismetric['path']).group(1)
+					_path = reMetricPathMDS.search(thismetric['path']).group(1)
 					metricpath = "%s.%s.%s" % ( myfs, myhostname, _path)
 					putmsg.append( "%s %f %i\n" % (metricpath, data[metricnumber], newtime) )
 
 				elif 'ost' in thismetric['path']:
 					#mylogger.debug(thismetric['path'])
-					_path = reMetricPathOST(thismetric['path']).group(1)
+					_path = reMetricPathOST.search(thismetric['path']).group(1)
 					if thismetric['valtype'] == 0:
 						if thismetric['rate']:
 							try:
@@ -566,7 +564,10 @@ def pm2graphite(options):
 			pmdSocket.senddata(message)
 			olddata=deepcopy(data)
 
-	remove(tempfh.name)	
+	try:
+		remove(tempfh.name)	
+	except:
+		pass
 
 
 
