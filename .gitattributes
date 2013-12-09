@@ -1,0 +1,3 @@
+#see man gitattributes
+*.py ident
+*.sh ident
