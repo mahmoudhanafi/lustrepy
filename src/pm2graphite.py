@@ -1,22 +1,33 @@
 #!/usr/bin/env python
-# $Source: /cvsroot/lustrepy/src/pm2graphite.py,v $
+# 
 '''
-Created on Jul 5, 2013
+-- GPL HEADER START --
+Send pcp to graphite colletor daemon.
+Copyright (c) 2013 NASA 
+Author: Mahmoud Hanafi (mahmoud.hanafi@nasa.gov)
 
-@author: mhanafi
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
 
-Required Python Modules
-python-configobj
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
 
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+-- GPL HEADER END --
+
+
+PROGRAM REQUIREMENTS:
+1. pcp with lustre pmda
+2. python 
 
 '''
-
-__author__ = "Mahmoud Hanafi"
-__copyright__ = "Copyright (C) 2013 Mahmoud Hanafi NASA AMES"
-
-__revision__ = "$Id$"
-__version__ = "0.0"
-
 import sys
 sys.path.append("./")
 import re
