@@ -357,11 +357,15 @@ def optionParser(argv):
 			mylogger.setLevel(logging.DEBUG)
 	else:
 			mylogger.setLevel(logging.INFO)
+	if options.daemon and not options.logfile:
+		mylogger.error("you must give logfile option if running in daemon")
+		sys.exit(1)
 	if options.logfile:
 		logFileHandle = logging.FileHandler(options.logfile)
 		logFileHandle.setFormatter(logFormate)
 		mylogger.removeHandler(logStdOutHandle)		
 		mylogger.addHandler(logFileHandle)
+
 	return options
 
 def pm2graphite(options):
