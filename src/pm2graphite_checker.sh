@@ -135,7 +135,9 @@ rm -f $tmp.err
 line=0
     line=`expr $line + 1`
 
-
+	MYHOSTNAME=`uname -n`
+	#exit if hostname is not in config file
+	[[ `grep $MYHOSTNAME $PM2GRAPHITECONF` ]] || exit 
     [[ $VERY_VERBOSE ]] || 	echo "Checking pm2graphite ..."
     
 	# Check if running if not start
